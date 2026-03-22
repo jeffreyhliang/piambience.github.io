@@ -230,7 +230,8 @@ window.addEventListener('touchstart', e => {
   updateTarget(e.touches[0].clientX, e.touches[0].clientY);
 });
 
-const notes = ['C3','D3','E3','G3','A3','C4','D4','E4','G4','A4','C5','D5','E5'];
+//const notes = ['C3','D3','E3','G3','A3','C4','D4','E4','G4','A4','C5','D5','E5'];
+const notes = [['C3','E3','G3'],['D3','F3','A3'],['E3','G3','B3'],['F3','A3','C4'],['G3','B3','D4'],['A3','C4','E4'],['B3','D4','F4'],['C4','E4','G4'],['D4','F4','A4'],['E4','G4','B4'],['F4','A4','C5'],['G4','B4','D5'],['A4','C5','E5']];
 
 window.addEventListener('click', async e => {
   await Tone.start();
