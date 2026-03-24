@@ -73,6 +73,7 @@ function playEvent(event: NoteEvent | null, time: number, valence: number): void
 Tone.Transport.scheduleRepeat((time: number) => {
   const { x: valence, y: arousal } = getSmooth();
   tickChord(valence, arousal);
+  console.log(time);
 }, '1m');
 
 // Bass: every 8th note
