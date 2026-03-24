@@ -42,9 +42,20 @@ Tone.Transport.timeSignature = 4;
 
 /**
  * Play a NoteEvent through the synth and spawn particles.
+ * Handles grace notes by scheduling them slightly before the main notes.
  */
 function playEvent(event: NoteEvent | null, time: number, valence: number): void {
   if (!event) return;
+
+  // grace note: quick, soft, just before the main note
+  if (event.graceNote) {
+    const graceTime = time - 0.06; // ~60ms before
+    if (graceTime > 0) {
+      synth.triggerAttackRelease(event.graceNote, '32n', graceTime, event.velocity * 0.5);
+      spawnNoteParticle(event.graceNote, event.velocity * 0.4, valence);
+    }
+  }
+
   synth.triggerAttackRelease(event.notes, event.duration, time, event.velocity);
   event.notes.forEach(note => spawnNoteParticle(note, event.velocity, valence));
 }

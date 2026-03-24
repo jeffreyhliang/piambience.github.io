@@ -116,10 +116,107 @@ let lastMelodyMidi: number = 67; // G4
 
 
 // ============================================================
-// MELODY PICKER (single note per tick)
+// MELODY PICKER — intervals, harmony, grace notes
 // ============================================================
 
-function pickOneMelodyNote(
+type IntervalType = 'single' | 'third_above' | 'third_below' | 'sixth_above' | 'octave';
+
+/**
+ * Choose what kind of interval to add based on arousal.
+ */
+function chooseIntervalType(arousal: number): IntervalType {
+  const roll = Math.random();
+
+  if (arousal < 0.3) {
+    // calm: mostly single notes, rare open intervals
+    if (roll < 0.88) return 'single';
+    if (roll < 0.95) return 'sixth_above';
+    return 'octave';
+  } else if (arousal < 0.6) {
+    // moderate: some thirds
+    if (roll < 0.65) return 'single';
+    if (roll < 0.80) return 'third_above';
+    if (roll < 0.88) return 'third_below';
+    if (roll < 0.95) return 'sixth_above';
+    return 'octave';
+  } else {
+    // energetic: frequent intervals
+    if (roll < 0.45) return 'single';
+    if (roll < 0.62) return 'third_above';
+    if (roll < 0.75) return 'third_below';
+    if (roll < 0.87) return 'sixth_above';
+    return 'octave';
+  }
+}
+
+/**
+ * Given a primary MIDI note, find the best harmony note of the given interval
+ * that stays within the current scale.
+ */
+function findHarmonyNote(
+  primary: number,
+  intervalType: IntervalType,
+  scaleMidi: number[],
+): number | null {
+  if (intervalType === 'single') return null;
+
+  // target intervals in semitones
+  const targets: Record<Exclude<IntervalType, 'single'>, number[]> = {
+    'third_above':  [3, 4],       // minor or major third up
+    'third_below':  [-3, -4],     // minor or major third down
+    'sixth_above':  [8, 9],       // minor or major sixth up
+    'octave':       [12],         // octave up
+  };
+
+  const offsets = targets[intervalType];
+
+  // try each target offset, prefer ones that land on a scale tone
+  for (const offset of offsets) {
+    const candidate = primary + offset;
+    if (candidate >= 48 && candidate <= 96 && scaleMidi.includes(candidate)) {
+      return candidate;
+    }
+  }
+
+  // fallback: try the other option even if not in scale
+  for (const offset of offsets) {
+    const candidate = primary + offset;
+    if (candidate >= 48 && candidate <= 96) {
+      return candidate;
+    }
+  }
+
+  return null;
+}
+
+/**
+ * Decide whether to add a chromatic grace note (half step approach).
+ * More likely at moderate arousal (expressive), less at extremes.
+ */
+function maybeGraceNote(
+  primary: number,
+  arousal: number,
+): number | null {
+  // grace notes are most expressive in the mid-arousal range
+  const chance = arousal < 0.2 ? 0.03
+    : arousal < 0.4 ? 0.12
+    : arousal < 0.7 ? 0.15
+    : 0.08;
+
+  if (Math.random() > chance) return null;
+
+  // approach from half step below or above (both chromatic)
+  const direction = Math.random() < 0.7 ? -1 : 1; // mostly from below
+  const grace = primary + direction;
+
+  if (grace >= 48 && grace <= 96) return grace;
+  return null;
+}
+
+/**
+ * Pick primary melody note using weighted stepwise motion.
+ */
+function pickPrimaryNote(
   chordTonesMidi: number[],
   scaleMidi: number[],
   arousal: number,
@@ -163,6 +260,27 @@ function pickOneMelodyNote(
 
   lastMelodyMidi = candidates[0];
   return lastMelodyMidi;
+}
+
+/**
+ * Full melody pick: primary note + possible harmony interval + possible grace note.
+ */
+function pickMelodyNotes(
+  chordTonesMidi: number[],
+  scaleMidi: number[],
+  arousal: number,
+): { notes: number[]; graceNote: number | null } {
+  const primary = pickPrimaryNote(chordTonesMidi, scaleMidi, arousal);
+
+  // interval harmony
+  const intervalType = chooseIntervalType(arousal);
+  const harmony = findHarmonyNote(primary, intervalType, scaleMidi);
+  const notes = harmony ? [primary, harmony] : [primary];
+
+  // grace note (chromatic approach)
+  const grace = maybeGraceNote(primary, arousal);
+
+  return { notes, graceNote: grace };
 }
 
 
@@ -248,9 +366,10 @@ rebuildChordState();
 
 /** Emitted by tick functions so the caller knows what to play */
 export interface NoteEvent {
-  notes: string[];     // note names
-  velocity: number;    // 0–1
-  duration: string;    // Tone.js duration string
+  notes: string[];       // note names (simultaneous)
+  velocity: number;      // 0–1
+  duration: string;      // Tone.js duration string
+  graceNote?: string;    // optional: played slightly before the main notes
 }
 
 /**
@@ -277,7 +396,7 @@ export function tickMelody(valence: number, arousal: number): NoteEvent | null {
   const restChance = arousal < 0.3 ? 0.4 : arousal < 0.6 ? 0.2 : 0.08;
   if (Math.random() < restChance) return null;
 
-  const midi = pickOneMelodyNote(chordTonesMidi, scaleMidi, arousal);
+  const { notes: midiNotes, graceNote } = pickMelodyNotes(chordTonesMidi, scaleMidi, arousal);
   const velocity = computeVelocity(valence, arousal);
 
   // duration varies with arousal
@@ -291,9 +410,10 @@ export function tickMelody(valence: number, arousal: number): NoteEvent | null {
   }
 
   return {
-    notes: [midiToNote(midi)],
+    notes: midiNotes.map(midiToNote),
     velocity,
     duration,
+    graceNote: graceNote ? midiToNote(graceNote) : undefined,
   };
 }
 
