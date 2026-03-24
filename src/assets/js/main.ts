@@ -96,13 +96,16 @@ Tone.Transport.scheduleRepeat((time: number) => {
 
 let started = false;
 
-window.addEventListener('click', async () => {
-  if (started) return;
+window.addEventListener('pointerdown', async () => {
+  if (started) {
+    Tone.Transport.stop();
+    started = false;
+    return;
+  }
   await startAudio();
   Tone.Transport.start();
   started = true;
-}, { once: true });
-
+});
 
 // ---- Render loop (visuals only, no audio logic) ----
 
