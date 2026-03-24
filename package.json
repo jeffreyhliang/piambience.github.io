@@ -14,5 +14,14 @@
   },
   "dependencies": {
     "tone": "^15.1.22"
-  }
+  },
+  "description": "",
+  "main": "index.js",
+  "repository": {
+    "type": "git",
+    "url": "https://github.gatech.edu/jliang354/piambience.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC"
 }
