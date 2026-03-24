@@ -70,10 +70,9 @@ function playEvent(event: NoteEvent | null, time: number, valence: number): void
  */
 
 // Chord: once per bar
-Tone.Transport.scheduleRepeat((time: number) => {
+Tone.Transport.scheduleRepeat(() => {
   const { x: valence, y: arousal } = getSmooth();
   tickChord(valence, arousal);
-  console.log(time);
 }, '1m');
 
 // Bass: every 8th note
