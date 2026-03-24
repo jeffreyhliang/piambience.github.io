@@ -1,21 +1,347 @@
 /**
- * Note selection — scales and picking logic.
- * This module will eventually house the Markov chain engine.
+ * Note generation — orchestrates chord engine, melody, bass, arpeggios.
+ * Tick-driven: external clock calls tickChord / tickMelody / tickBass.
  */
 
-const SCALES = {
-  minor: ['C3','Eb3','F3','G3','Bb3','C4','Eb4','F4','G4','Bb4','C5'],
-  major: ['B3','C3','D3','E3','G3','A3','B4','C4','D4','E4','G4','A4','B5','C5'],
+import { ChordEngine } from './markov.js';
+import type { ChordInfo } from './markov.js';
+
+// ============================================================
+// NOTE UTILITIES
+// ============================================================
+
+const CHROMATIC = ['C','Db','D','Eb','E','F','Gb','G','Ab','A','Bb','B'] as const;
+
+const ROOT_OFFSETS: Record<string, number> = {
+  'C': 0, 'Db': 1, 'D': 2, 'Eb': 3, 'E': 4, 'F': 5,
+  'Gb': 6, 'G': 7, 'Ab': 8, 'A': 9, 'Bb': 10, 'B': 11,
+  'C#': 1, 'D#': 3, 'F#': 6, 'G#': 8, 'A#': 10,
+};
+
+const SCALE_INTERVALS = {
+  major:         [0, 2, 4, 5, 7, 9, 11],
+  natural_minor: [0, 2, 3, 5, 7, 8, 10],
 } as const;
 
-type ScaleKey = keyof typeof SCALES;
+export function noteToMidi(note: string): number {
+  const match = note.match(/^([A-Ga-g][b#]?)(\d+)$/);
+  if (!match) return 60;
+  const [, name, octStr] = match;
+  const key = name.charAt(0).toUpperCase() + name.slice(1);
+  return (parseInt(octStr) + 1) * 12 + (ROOT_OFFSETS[key] ?? 0);
+}
 
-export function pickNotes(valence: number, _arousal: number): string[] {
-  const key: ScaleKey = valence < 0.5 ? 'minor' : 'major';
-  const candidates = SCALES[key];
-  const numNotes = Math.floor(Math.random() * candidates.length);
-  const idx = new Array(numNotes)
-    .fill(0)
-    .map(() => Math.floor(Math.random() * candidates.length));
-  return idx.map(i => candidates[i]);
+export function midiToNote(midi: number): string {
+  const octave = Math.floor(midi / 12) - 1;
+  return `${CHROMATIC[midi % 12]}${octave}`;
+}
+
+function getScaleMidi(tonic: number, mode: 'major' | 'minor'): number[] {
+  const intervals = mode === 'major'
+    ? SCALE_INTERVALS.major
+    : SCALE_INTERVALS.natural_minor;
+  const notes: number[] = [];
+  for (let midi = 36; midi <= 96; midi++) {
+    const degree = (midi - tonic + 120) % 12;
+    if ((intervals as readonly number[]).includes(degree)) {
+      notes.push(midi);
+    }
+  }
+  return notes;
+}
+
+
+// ============================================================
+// ARPEGGIO / BASS PATTERNS
+// ============================================================
+
+export type PatternStyle = 'whole' | 'fifth' | 'alberti' | 'ascending' | 'descending' | 'broken';
+
+interface Pattern {
+  /** Returns chord-tone indices for each step in the pattern */
+  steps: number[][];
+  /** How many transport subdivisions this pattern spans */
+  length: number;
+}
+
+/**
+ * Generate a bass/arpeggio pattern from chord tones.
+ * Each step is an array of indices into the chord voicing.
+ */
+function buildPattern(style: PatternStyle): Pattern {
+  switch (style) {
+    case 'whole':
+      // single root, held for full bar
+      return { steps: [[0]], length: 1 };
+
+    case 'fifth':
+      // root then fifth, half notes
+      return { steps: [[0], [2]], length: 2 };
+
+    case 'alberti':
+      // classic: root, fifth, third, fifth (repeating 8ths)
+      return { steps: [[0], [2], [1], [2], [0], [2], [1], [2]], length: 8 };
+
+    case 'ascending':
+      // sweep up through chord tones
+      return { steps: [[0], [1], [2], [3]], length: 4 };
+
+    case 'descending':
+      // sweep down
+      return { steps: [[3], [2], [1], [0]], length: 4 };
+
+    case 'broken':
+      // root, fifth, third, octave — open voicing feel
+      return { steps: [[0], [2], [1], [3], [0], [2], [1], [3]], length: 8 };
+  }
+}
+
+/** Choose a pattern style based on arousal */
+function choosePatternStyle(arousal: number): PatternStyle {
+  if (arousal < 0.2) return 'whole';
+  if (arousal < 0.35) return 'fifth';
+  if (arousal < 0.5) return 'ascending';
+  if (arousal < 0.65) return 'alberti';
+  if (arousal < 0.8) return 'broken';
+  // high energy: mix of ascending and broken
+  return Math.random() < 0.5 ? 'broken' : 'descending';
+}
+
+
+// ============================================================
+// MELODY STATE
+// ============================================================
+
+let lastMelodyMidi: number = 67; // G4
+
+
+// ============================================================
+// MELODY PICKER (single note per tick)
+// ============================================================
+
+function pickOneMelodyNote(
+  chordTonesMidi: number[],
+  scaleMidi: number[],
+  arousal: number,
+): number {
+  const range = arousal > 0.6 ? 7 : 4;
+  const candidates = scaleMidi.filter(
+    m => Math.abs(m - lastMelodyMidi) <= range && m >= 60 && m <= 84
+  );
+
+  if (candidates.length === 0) {
+    const fallback = chordTonesMidi.filter(m => m >= 60 && m <= 84);
+    if (fallback.length > 0) {
+      lastMelodyMidi = fallback[Math.floor(Math.random() * fallback.length)];
+    }
+    return lastMelodyMidi;
+  }
+
+  const weights = candidates.map(m => {
+    let w = 1.0;
+    const dist = Math.abs(m - lastMelodyMidi);
+    if (dist <= 2) w *= 4.0;
+    else if (dist <= 4) w *= 2.0;
+    else w *= 0.5;
+
+    const degree = (m + 120) % 12;
+    const isChordTone = chordTonesMidi.some(ct => (ct + 120) % 12 === degree);
+    if (isChordTone) w *= 2.5;
+
+    return w;
+  });
+
+  const sum = weights.reduce((s, w) => s + w, 0);
+  let roll = Math.random() * sum;
+  for (let i = 0; i < candidates.length; i++) {
+    roll -= weights[i];
+    if (roll <= 0) {
+      lastMelodyMidi = candidates[i];
+      return lastMelodyMidi;
+    }
+  }
+
+  lastMelodyMidi = candidates[0];
+  return lastMelodyMidi;
+}
+
+
+// ============================================================
+// DYNAMICS
+// ============================================================
+
+let noteInPhrase: number = 0;
+let phraseLength: number = 4 + Math.floor(Math.random() * 5);
+let barCount: number = 0;
+const ENVELOPE_PERIOD = 12;
+
+function computeVelocity(valence: number, arousal: number): number {
+  const envelopePhase = (barCount / ENVELOPE_PERIOD) * Math.PI * 2;
+  const slowBreath = 0.3 + 0.15 * Math.sin(envelopePhase);
+
+  const phrasePos = noteInPhrase / phraseLength;
+  const phraseArc = Math.sin(phrasePos * Math.PI);
+
+  let velocity = slowBreath * (0.7 + 0.3 * phraseArc);
+  velocity *= 0.6 + arousal * 0.5;
+  velocity *= 0.85 + valence * 0.15;
+
+  noteInPhrase++;
+  if (noteInPhrase >= phraseLength) {
+    noteInPhrase = 0;
+    phraseLength = 4 + Math.floor(Math.random() * 5);
+  }
+
+  return Math.max(0.08, Math.min(0.95, velocity));
+}
+
+
+// ============================================================
+// NOTE ENGINE — tick-driven public API
+// ============================================================
+
+const TONIC = 0; // C
+const chordEngine = new ChordEngine();
+
+// current chord state (updated once per bar)
+let currentChord: ChordInfo = chordEngine.currentChord;
+let chordTonesMidi: number[] = [];
+let scaleMidi: number[] = [];
+
+// bass pattern state
+let currentPattern: Pattern = buildPattern('whole');
+let bassStep: number = 0;
+
+// bass voicing: chord tones in bass register (C2–C4)
+let bassVoicing: number[] = [];
+
+function rebuildChordState(): void {
+  const chordRoot = TONIC + currentChord.root;
+
+  // chord tones across full range (for melody weighting)
+  chordTonesMidi = [];
+  for (let oct = 2; oct <= 5; oct++) {
+    const base = (oct + 1) * 12 + chordRoot;
+    currentChord.intervals.forEach(i => chordTonesMidi.push(base + i));
+  }
+
+  // bass voicing: root position in octave 2–3
+  bassVoicing = [];
+  for (let oct = 2; oct <= 3; oct++) {
+    const base = (oct + 1) * 12 + chordRoot;
+    currentChord.intervals.forEach(i => {
+      const midi = base + i;
+      if (midi >= 36 && midi <= 60) bassVoicing.push(midi);
+    });
+  }
+  // add octave above root for patterns that reference index 3
+  if (bassVoicing.length > 0) {
+    bassVoicing.push(bassVoicing[0] + 12);
+  }
+
+  scaleMidi = getScaleMidi(TONIC, chordEngine.mode);
+}
+
+// initialize
+rebuildChordState();
+
+
+/** Emitted by tick functions so the caller knows what to play */
+export interface NoteEvent {
+  notes: string[];     // note names
+  velocity: number;    // 0–1
+  duration: string;    // Tone.js duration string
+}
+
+/**
+ * Call once per bar (or every N beats for faster harmonic rhythm).
+ * Advances the chord and rebuilds voicings.
+ */
+export function tickChord(valence: number, arousal: number): void {
+  currentChord = chordEngine.next(valence, arousal);
+  barCount++;
+  rebuildChordState();
+
+  // pick new bass pattern based on current arousal
+  const style = choosePatternStyle(arousal);
+  currentPattern = buildPattern(style);
+  bassStep = 0;
+}
+
+/**
+ * Call on each melody subdivision (e.g. every 8th note).
+ * Returns a single melody note event, or null for a rest.
+ */
+export function tickMelody(valence: number, arousal: number): NoteEvent | null {
+  // occasional rests make it breathe — more rests when calm
+  const restChance = arousal < 0.3 ? 0.4 : arousal < 0.6 ? 0.2 : 0.08;
+  if (Math.random() < restChance) return null;
+
+  const midi = pickOneMelodyNote(chordTonesMidi, scaleMidi, arousal);
+  const velocity = computeVelocity(valence, arousal);
+
+  // duration varies with arousal
+  let duration: string;
+  if (arousal < 0.3) {
+    duration = Math.random() < 0.6 ? '4n' : '2n';
+  } else if (arousal < 0.6) {
+    duration = Math.random() < 0.5 ? '8n' : '4n';
+  } else {
+    duration = Math.random() < 0.6 ? '8n' : '16n';
+  }
+
+  return {
+    notes: [midiToNote(midi)],
+    velocity,
+    duration,
+  };
+}
+
+/**
+ * Call on each bass subdivision (e.g. every 8th note).
+ * Steps through the current arpeggio/bass pattern.
+ * Returns a note event, or null if the pattern doesn't have a note on this step.
+ */
+export function tickBass(valence: number, arousal: number): NoteEvent | null {
+  if (bassVoicing.length === 0) return null;
+
+  // get current step in pattern
+  const stepIdx = bassStep % currentPattern.length;
+  const chordIndices = currentPattern.steps[stepIdx];
+  bassStep++;
+
+  if (!chordIndices || chordIndices.length === 0) return null;
+
+  // map pattern indices to actual MIDI notes
+  const notes = chordIndices
+    .map(idx => bassVoicing[Math.min(idx, bassVoicing.length - 1)])
+    .filter((m): m is number => m !== undefined)
+    .map(midiToNote);
+
+  if (notes.length === 0) return null;
+
+  const velocity = computeVelocity(valence, arousal) * 0.7; // bass sits back
+
+  // bass duration: longer notes when calm
+  let duration: string;
+  if (arousal < 0.3) {
+    duration = '2n';
+  } else if (arousal < 0.5) {
+    duration = '4n';
+  } else {
+    duration = '8n';
+  }
+
+  return {
+    notes,
+    velocity,
+    duration,
+  };
+}
+
+/**
+ * Get current chord name for debug/display.
+ */
+export function getCurrentChord(): string {
+  return chordEngine.current;
 }

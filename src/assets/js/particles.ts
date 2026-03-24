@@ -41,10 +41,13 @@ export function spawnNoteParticle(
     life: 0.0,
     fadeIn: 0.015 + Math.random() * 0.01,
     fadingIn: true,
-    decay: 0.002 + Math.random() * 0.003,
-    size: 3 + velocity * 5 + Math.random() * 3,
+    //decay: 0.002 + Math.random() * 0.003,
+    decay: 0.01 + Math.random() * 0.003,
+    //size: 3 + velocity * 5 + Math.random() * 3,
+    size: 1 + velocity * 5 + Math.random() * 4,
     hue, sat, light,
   });
+
 }
 
 export function updateAndDrawParticles(

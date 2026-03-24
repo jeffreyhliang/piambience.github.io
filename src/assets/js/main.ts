@@ -1,10 +1,13 @@
 /**
- * Main — orchestrator. Wires all modules together.
+ * Main — orchestrator. Transport-driven clock for musical timing.
  */
+
+declare const Tone: any;
 
 import { synth, startAudio } from './audio.js';
 import { getSmooth, tickSmoothing, getMoodLabel } from './mood.js';
-import { pickNotes } from './notes.js';
+import { tickChord, tickMelody, tickBass } from './notes.js';
+import type { NoteEvent } from './notes.js';
 import { spawnNoteParticle, updateAndDrawParticles } from './particles.js';
 import { initInput } from './input.js';
 import { initWebGL } from './shader.js';
@@ -28,32 +31,69 @@ function resizeParticleCanvas() {
 window.addEventListener('resize', resizeParticleCanvas);
 resizeParticleCanvas();
 
-// ---- Generative playback loop ----
+
+// ---- Transport setup ----
+
+// Nocturne tempo: slow and expressive
+Tone.Transport.bpm.value = 66;
+
+// Time signature: 4/4
+Tone.Transport.timeSignature = 4;
+
+/**
+ * Play a NoteEvent through the synth and spawn particles.
+ */
+function playEvent(event: NoteEvent | null, time: number, valence: number): void {
+  if (!event) return;
+  synth.triggerAttackRelease(event.notes, event.duration, time, event.velocity);
+  event.notes.forEach(note => spawnNoteParticle(note, event.velocity, valence));
+}
+
+/**
+ * Schedule all musical events on the Transport.
+ *
+ * Bar structure (4/4 at ~66 bpm):
+ *   - Chord advances every bar (beat 0)
+ *   - Bass pattern ticks every 8th note
+ *   - Melody ticks every 8th note (offset slightly for feel)
+ */
+
+// Chord: once per bar
+Tone.Transport.scheduleRepeat((time: number) => {
+  const { x: valence, y: arousal } = getSmooth();
+  tickChord(valence, arousal);
+}, '1m');
+
+// Bass: every 8th note
+Tone.Transport.scheduleRepeat((time: number) => {
+  const { x: valence, y: arousal } = getSmooth();
+  const event = tickBass(valence, arousal);
+  playEvent(event, time, valence);
+}, '8n');
+
+// Melody: every 8th note, offset by a 16th for slight stagger
+// This prevents melody and bass from hitting at exactly the same instant,
+// which sounds more natural — like two hands playing independently.
+Tone.Transport.scheduleRepeat((time: number) => {
+  const { x: valence, y: arousal } = getSmooth();
+  const event = tickMelody(valence, arousal);
+  playEvent(event, time, valence);
+}, '8n', '16n');
+
+
+// ---- Click to start ----
 
 let started = false;
-
-function playNext(): void {
-  if (!started) return;
-
-  const { x: valence, y: arousal } = getSmooth();
-  const notes = pickNotes(valence, arousal);
-  const velocity = 0.15 + valence * 0.25;
-
-  synth.triggerAttackRelease(notes, '1n', undefined, velocity);
-  notes.forEach((note: string) => spawnNoteParticle(note, velocity, valence));
-
-  const interval = (0.2 + (1.0 - arousal) * 0.8) / 2;
-  setTimeout(playNext, interval * 1000);
-}
 
 window.addEventListener('click', async () => {
   if (started) return;
   await startAudio();
+  Tone.Transport.start();
   started = true;
-  playNext();
 }, { once: true });
 
-// ---- Render loop ----
+
+// ---- Render loop (visuals only, no audio logic) ----
 
 const startTime = Date.now();
 
